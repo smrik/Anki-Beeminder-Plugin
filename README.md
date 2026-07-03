@@ -31,6 +31,20 @@ After each review session or AnkiWeb sync, the plugin reads your chosen metric f
 - **Background networking** — all API calls run off the main thread; Anki never freezes
 - **Structured logging** — writes to `beeminder_sync.log` in the add-on folder for easy debugging
 
+## Screenshots
+
+### Toolbar badge in Anki
+
+Shows your tracked metric and remaining backlog in one compact line.
+
+![Toolbar badge](docs/images/toolbar-badge-single-line.png)
+
+### Beeminder goal setup (data source = API)
+
+Set your Beeminder goal data source to API so updates are driven by the plugin.
+
+![Beeminder goal API data source](docs/images/beeminder-goal-data-source-api.png)
+
 ## Requirements
 
 - Anki 2.1.50 or later
@@ -146,4 +160,3 @@ Bug reports and pull requests are welcome. Please open an issue before submittin
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
