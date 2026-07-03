@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Anki runtime files
+user_files/
+beeminder_sync.log
+beeminder_sync.log.*
+
+# Credentials — never commit real config
+config.json
+
+# Development artifacts
+visual_test.py
+visual_test_output/
+copy.ps1
+
+# AI agent state
+.agent/
+.agents/
+AGENTS.md
+
+# Editors
+.vscode/
+.idea/

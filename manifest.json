@@ -1,0 +1,9 @@
+{
+    "name": "Anki-Beeminder Sync",
+    "package": "anki_beeminder_sync",
+    "min_point_version": 50,
+    "max_point_version": -1,
+    "human_version": "1.1.0",
+    "author": "smrik",
+    "description": "Syncs your Anki study stats to Beeminder to build a consistent review habit."
+}

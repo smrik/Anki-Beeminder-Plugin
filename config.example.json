@@ -1,0 +1,10 @@
+{
+    "beeminder_user": "your-username",
+    "beeminder_token": "your-api-token",
+    "beeminder_goal": "your-goal-slug",
+    "sync_metric": "reviews_today",
+    "deck_filter": "",
+    "other_goals": "",
+    "sync_on_anki_sync": true,
+    "sync_on_review_end": true
+}
