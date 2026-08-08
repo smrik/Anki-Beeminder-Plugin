@@ -14,7 +14,7 @@ You set the goal, set the stakes, and then just use Anki normally. The plugin ha
 
 ## How it works
 
-After each review session or AnkiWeb sync, the plugin reads your chosen metric from Anki's database and posts it to your Beeminder goal via the Beeminder REST API. It uses a fixed daily idempotency key (`requestid`) so that multiple syncs on the same day update the same datapoint rather than stacking new ones. The value cache ensures the API is only hit when your count actually changes.
+After each review session or configured Anki sync, the plugin reads your chosen metric from Anki's database and posts it to your Beeminder goal via the Beeminder REST API. It uses a fixed daily idempotency key (`requestid`) so that multiple syncs on the same day update the same datapoint rather than stacking new ones. The value cache ensures the API is only hit when your count actually changes.
 
 ## Features
 
@@ -24,7 +24,7 @@ After each review session or AnkiWeb sync, the plugin reads your chosen metric f
   - Current backlog (cards due or in learning — for inbox-zero style goals)
   - Study time today (total minutes in review)
 - **Deck filter** — track your whole collection or a single deck
-- **Auto-sync** — fires after each review session and after AnkiWeb sync, independently configurable
+- **Auto-sync** — fires after each review session and after configured sync, independently configurable
 - **Deduplication** — one datapoint per day, updated in place, never stacked
 - **Toolbar badge** — shows your current metric and remaining backlog at a glance
 - **Dashboard** — live Beeminder graphs, time to derailment, and pledge amounts for all your goals
@@ -51,9 +51,9 @@ Set your Beeminder goal data source to API so updates are driven by the plugin.
 - A Beeminder account (free tier is sufficient)
 - No external Python dependencies — uses the standard library only
 
-The optional GitHub Actions worker installs the pinned headless Anki dependency
-from `requirements-worker.txt` on the runner. It is not installed into the
-desktop add-on.
+The Linux worker installs the pinned headless Anki dependency from
+`requirements-worker.txt` into its own virtual environment. It is not installed
+into the desktop add-on.
 
 ## Installation
 
@@ -121,46 +121,109 @@ Click **Save Settings**. The toolbar badge updates immediately.
 
 ## Usage
 
-**Automatic:** Study as normal. The plugin syncs when you finish a review session or when Anki syncs with AnkiWeb.
+**Automatic:** Study as normal. The plugin syncs when you finish a review session or when Anki syncs with the configured sync server.
 
 **Manual:** Click the toolbar badge or go to Tools > Beeminder Force Sync to push an update immediately.
 
 **Dashboard:** Click the toolbar badge and stay on the Dashboard tab to see live graphs, time to derailment, and pledge amounts for all configured goals.
 
-## Optional GitHub Actions daily sync
+## Linux self-hosted daily sync
 
-If you want the daily update to happen even when Anki is not open on the
-laptop, this repository includes `.github/workflows/beeminder-daily.yml`.
-It runs at 21:05 in `Europe/Ljubljana`, syncs a disposable collection from
-AnkiWeb without downloading media, calculates the existing `reviews_today`
-metric, and upserts one Beeminder datapoint for that Anki day.
+The daily worker is intentionally local now. GitHub-hosted runners cannot
+reliably download a full collection from AnkiWeb headlessly, so the supported
+path is:
 
-This does not remove the need for AnkiMobile to sync: phone reviews must reach
-AnkiWeb before the scheduled job can see them. The worker counts review answers
-(`revlog` entries), not unique notes.
+```text
+AnkiMobile ─┐
+Desktop Anki ─┼─> Linux self-hosted sync server
+             │              │
+             │              └─> 21:05 systemd worker ─> Beeminder
+```
 
-### GitHub setup
+The server is the official standalone Anki sync server described in the
+[Anki Manual](https://docs.ankiweb.net/sync-server.html). The repository pins
+the same `anki==26.5` package for the server and the worker. Keep the server
+and Anki clients on compatible versions; Anki's sync protocol can change.
 
-For privacy, use a private fork or a private copy of this repository. In the
-repository settings, add these Actions secrets:
+### Install the Linux setup
 
-| Secret | Value |
-|---|---|
-| `ANKIWEB_USERNAME` | Your AnkiWeb username or email |
-| `ANKIWEB_PASSWORD` | Your AnkiWeb password |
-| `BEEMINDER_USER` | Your Beeminder username |
-| `BEEMINDER_TOKEN` | Your Beeminder API token |
-| `BEEMINDER_GOAL` | The Beeminder goal slug |
+Check out this repository on the Linux machine that should stay available for
+mobile sync, then run:
 
-Optional Actions variables are `ANKI_DECK_FILTER` (blank means all decks) and
-`ANKI_TIMEZONE` (defaults to `Europe/Ljubljana`). Never put these credentials
-in `config.json`, workflow files, commits, or log output.
+```bash
+bash scripts/setup_linux_sync.sh
+```
 
-Use **Actions → Daily Anki reviews to Beeminder → Run workflow** for the first
-run. Select `dry_run` to validate the AnkiWeb sync and metric without writing
-to Beeminder; the normal scheduled run performs the Beeminder update. GitHub
-Actions scheduling is best-effort, so the manual trigger is also the recovery
-path after an authentication or network failure.
+The wizard installs the Python runtime, creates an unprivileged `anki` service
+account, configures these systemd units, and asks for credentials without
+printing them:
+
+- `/etc/systemd/system/anki-sync-server.service`
+- `/etc/systemd/system/anki-beeminder.service`
+- `/etc/systemd/system/anki-beeminder.timer`
+
+Secrets are stored outside Git in:
+
+- `/etc/anki-beeminder/anki-sync-server.env`
+- `/etc/anki-beeminder/anki-beeminder.env`
+
+The server collection lives at
+`/var/lib/anki-beeminder/sync/collection.anki2`. The worker first creates a
+SQLite snapshot of that file, then counts `revlog` entries in the snapshot, so
+it does not open the live server database for metric queries.
+
+### Safe migration from AnkiWeb
+
+1. Sync desktop Anki with AnkiWeb and create a fresh backup/export.
+2. Run the Linux wizard.
+3. In desktop Anki's syncing preferences, select the self-hosted sync server
+   and enter a URL such as `http://192.168.1.20:8080/` (keep the trailing `/`).
+4. Enter the new local sync username/password. On the first sync, explicitly
+   choose **Upload to server** so the backed-up desktop collection becomes the
+   Linux server copy.
+5. Configure AnkiMobile with the same URL and credentials, then sync it.
+6. Run the worker in dry-run mode and inspect the result before allowing the
+   first real Beeminder update:
+
+```bash
+  cd /opt/anki-beeminder
+  sudo -u anki env \
+  ANKI_COLLECTION_PATH=/var/lib/anki-beeminder/sync/collection.anki2 \
+  ANKI_TIMEZONE=Europe/Ljubljana \
+  BEEMINDER_USER='your-user' \
+  BEEMINDER_TOKEN='your-token' \
+  BEEMINDER_GOAL='your-goal' \
+  /opt/anki-beeminder/venv/bin/python -m scripts.daily_beeminder_sync --dry-run
+```
+
+Do not guess if the first-sync direction is unexpected; restore the backup
+and retry the cutover. The Linux host must be running and reachable whenever
+AnkiMobile needs to sync. For access away from home, use a private VPN such as
+Tailscale or a properly configured HTTPS reverse proxy. Do not expose the
+server's plain HTTP port directly to the public internet.
+
+### Operations
+
+The timer uses the Linux host's local timezone and runs at 21:05. Set it
+explicitly if needed:
+
+```bash
+sudo timedatectl set-timezone Europe/Ljubljana
+sudo systemctl status anki-sync-server.service --no-pager
+sudo systemctl list-timers anki-beeminder.timer
+sudo journalctl -u anki-sync-server -u anki-beeminder --since today
+```
+
+To run a real manual update after confirming the dry-run:
+
+```bash
+sudo systemctl start anki-beeminder.service
+```
+
+The worker uses a fixed daily Beeminder `requestid`, so rerunning the timer
+updates the same datapoint rather than creating duplicates. It reports only
+reviews that have already synced to the Linux server; the metric counts review
+answers (`revlog` entries), not unique notes.
 
 ## Metrics reference
 

@@ -1,15 +1,17 @@
-"""Sync an ephemeral AnkiWeb collection and upsert reviews_today to Beeminder."""
+"""Read a local Anki collection and upsert ``reviews_today`` to Beeminder."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -23,10 +25,9 @@ class WorkerError(RuntimeError):
 
 @dataclass(frozen=True)
 class WorkerConfig:
-    """Credentials and non-secret settings for one worker invocation."""
+    """Credentials and non-secret settings for one local-worker invocation."""
 
-    ankiweb_username: str
-    ankiweb_password: str
+    collection_path: Path
     beeminder_user: str
     beeminder_token: str
     beeminder_goal: str
@@ -35,8 +36,7 @@ class WorkerConfig:
 
 
 REQUIRED_ENV = (
-    "ANKIWEB_USERNAME",
-    "ANKIWEB_PASSWORD",
+    "ANKI_COLLECTION_PATH",
     "BEEMINDER_USER",
     "BEEMINDER_TOKEN",
     "BEEMINDER_GOAL",
@@ -44,15 +44,14 @@ REQUIRED_ENV = (
 
 
 def load_config(environment: Mapping[str, str] | None = None) -> WorkerConfig:
-    """Load and validate worker settings from environment variables."""
+    """Load and validate local-worker settings from environment variables."""
     environment = os.environ if environment is None else environment
     missing = [name for name in REQUIRED_ENV if not environment.get(name)]
     if missing:
         raise WorkerError("Missing required environment variables: " + ", ".join(missing))
 
     return WorkerConfig(
-        ankiweb_username=environment["ANKIWEB_USERNAME"],
-        ankiweb_password=environment["ANKIWEB_PASSWORD"],
+        collection_path=Path(environment["ANKI_COLLECTION_PATH"].strip()).expanduser(),
         beeminder_user=environment["BEEMINDER_USER"].strip(),
         beeminder_token=environment["BEEMINDER_TOKEN"],
         beeminder_goal=environment["BEEMINDER_GOAL"].strip(),
@@ -74,7 +73,7 @@ def build_datapoint_payload(
     return {
         "auth_token": config.beeminder_token,
         "value": float(value),
-        "comment": "Auto-sync from Anki (reviews_today) via GitHub Actions",
+        "comment": "Auto-sync from Anki (reviews_today) via Linux self-hosted worker",
         "requestid": _request_id(config.beeminder_goal, anki_day),
     }
 
@@ -98,7 +97,7 @@ def post_beeminder(
         _beeminder_url(config),
         data=urllib.parse.urlencode(payload).encode("utf-8"),
         method="POST",
-        headers={"User-Agent": "AnkiBeeminderGitHubActions/1.0"},
+        headers={"User-Agent": "AnkiBeeminderLinuxWorker/1.0"},
     )
     opener = urllib.request.urlopen if urlopen is None else urlopen
 
@@ -117,27 +116,23 @@ def post_beeminder(
     return status
 
 
-def _sync_state_matches(result, name: str) -> bool:
-    required = getattr(result, "required", None)
-    if required is None:
-        return False
+def snapshot_collection(source_path: str | Path, snapshot_path: str | Path) -> None:
+    """Create a consistent read-only SQLite snapshot of an Anki collection."""
+    source = Path(source_path).expanduser()
+    target = Path(snapshot_path).expanduser()
+    if not source.is_file():
+        raise WorkerError(f"Anki collection not found: {source}")
 
-    descriptor = getattr(type(result), "DESCRIPTOR", None)
-    fields_by_name = getattr(descriptor, "fields_by_name", {})
-    required_field = fields_by_name.get("required")
-    enum_type = getattr(required_field, "enum_type", None)
-    values_by_name = getattr(enum_type, "values_by_name", {})
-    enum_value = values_by_name.get(name)
-    if enum_value is not None and required == getattr(enum_value, "number", None):
-        return True
-
-    expected = [
-        getattr(result, name, None),
-        getattr(type(result), name, None),
-    ]
-    if any(value is not None and required == value for value in expected):
-        return True
-    return str(getattr(required, "name", "")).upper() == name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_uri = f"{source.resolve().as_uri()}?mode=ro"
+    try:
+        with closing(sqlite3.connect(source_uri, uri=True)) as source_db:
+            source_db.execute("PRAGMA query_only = 1")
+            with closing(sqlite3.connect(target)) as target_db:
+                source_db.backup(target_db)
+                target_db.commit()
+    except sqlite3.Error as error:
+        raise WorkerError(f"Could not snapshot Anki collection: {source}") from error
 
 
 def _default_collection_factory():
@@ -150,70 +145,21 @@ def _default_collection_factory():
     return Collection
 
 
-def sync_collection(
-    config: WorkerConfig,
-    collection_path: str | Path,
-    *,
-    collection_factory: Callable | None = None,
-):
-    """Open and sync a temporary collection from AnkiWeb without media."""
-    factory = _default_collection_factory() if collection_factory is None else collection_factory
-    collection = factory(str(collection_path))
-    try:
-        auth = collection.sync_login(
-            config.ankiweb_username,
-            config.ankiweb_password,
-            endpoint=None,
-        )
-        result = collection.sync_collection(auth, sync_media=False)
-
-        if _sync_state_matches(result, "FULL_DOWNLOAD"):
-            collection.close_for_full_sync()
-            collection.full_upload_or_download(
-                auth=auth,
-                server_usn=None,
-                upload=False,
-            )
-            collection.reopen(after_full_sync=True)
-        elif _sync_state_matches(result, "FULL_UPLOAD"):
-            raise WorkerError(
-                "AnkiWeb requested a full upload; refusing to upload from an empty runner collection"
-            )
-        elif _sync_state_matches(result, "FULL_SYNC"):
-            raise WorkerError(
-                "AnkiWeb reported a full-sync conflict; refusing to choose upload or download automatically"
-            )
-        return collection
-    except WorkerError:
-        try:
-            collection.close()
-        except Exception:
-            pass
-        raise
-    except Exception as error:
-        try:
-            collection.close()
-        except Exception:
-            pass
-        raise WorkerError("AnkiWeb sync failed") from error
-
-
 def run(
     config: WorkerConfig,
     *,
     dry_run: bool = False,
     collection_factory: Callable | None = None,
+    snapshotter: Callable[[str | Path, str | Path], None] = snapshot_collection,
     urlopen: Callable | None = None,
     output: Callable[[str], None] = print,
 ) -> int:
-    """Run one temporary AnkiWeb sync and optional Beeminder write."""
+    """Read one local Anki snapshot and optionally write its metric to Beeminder."""
+    factory = _default_collection_factory() if collection_factory is None else collection_factory
     with tempfile.TemporaryDirectory(prefix="anki-beeminder-") as temporary_directory:
-        collection_path = Path(temporary_directory) / "collection.anki2"
-        collection = sync_collection(
-            config,
-            collection_path,
-            collection_factory=collection_factory,
-        )
+        snapshot_path = Path(temporary_directory) / "collection.anki2"
+        snapshotter(config.collection_path, snapshot_path)
+        collection = factory(str(snapshot_path))
         try:
             value = get_reviews_today(collection, config.deck_filter)
             anki_day = anki_day_datestr(collection, config.timezone)
@@ -247,12 +193,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="sync and calculate the metric without writing to Beeminder",
+        help="calculate the metric without writing to Beeminder",
+    )
+    parser.add_argument(
+        "--collection-path",
+        help="override ANKI_COLLECTION_PATH for this invocation",
     )
     args = parser.parse_args(argv)
 
     try:
-        config = load_config()
+        if args.collection_path:
+            environment = dict(os.environ)
+            environment["ANKI_COLLECTION_PATH"] = args.collection_path
+            config = load_config(environment)
+        else:
+            config = load_config()
         run(config, dry_run=args.dry_run)
     except WorkerError as error:
         print(f"ERROR: {error}", file=sys.stderr)

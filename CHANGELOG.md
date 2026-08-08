@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- Official Linux self-hosted Anki sync-server deployment with systemd.
+- Local SQLite-snapshot worker and guided setup wizard for the daily Beeminder update.
+
+### Changed
+- The daily worker reads the Linux-hosted collection instead of attempting a
+  headless full download from AnkiWeb.
+- Credentials are stored in protected Linux environment files rather than
+  GitHub Actions secrets.
+
+### Removed
+- The scheduled GitHub Actions AnkiWeb sync workflow, which could not reliably
+  complete headless full collection downloads.
+
 ## [1.1.0] - 2026-07-03
 
 ### Added
