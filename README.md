@@ -51,6 +51,10 @@ Set your Beeminder goal data source to API so updates are driven by the plugin.
 - A Beeminder account (free tier is sufficient)
 - No external Python dependencies — uses the standard library only
 
+The optional GitHub Actions worker installs the pinned headless Anki dependency
+from `requirements-worker.txt` on the runner. It is not installed into the
+desktop add-on.
+
 ## Installation
 
 ### Via AnkiWeb
@@ -122,6 +126,41 @@ Click **Save Settings**. The toolbar badge updates immediately.
 **Manual:** Click the toolbar badge or go to Tools > Beeminder Force Sync to push an update immediately.
 
 **Dashboard:** Click the toolbar badge and stay on the Dashboard tab to see live graphs, time to derailment, and pledge amounts for all configured goals.
+
+## Optional GitHub Actions daily sync
+
+If you want the daily update to happen even when Anki is not open on the
+laptop, this repository includes `.github/workflows/beeminder-daily.yml`.
+It runs at 21:05 in `Europe/Ljubljana`, syncs a disposable collection from
+AnkiWeb without downloading media, calculates the existing `reviews_today`
+metric, and upserts one Beeminder datapoint for that Anki day.
+
+This does not remove the need for AnkiMobile to sync: phone reviews must reach
+AnkiWeb before the scheduled job can see them. The worker counts review answers
+(`revlog` entries), not unique notes.
+
+### GitHub setup
+
+For privacy, use a private fork or a private copy of this repository. In the
+repository settings, add these Actions secrets:
+
+| Secret | Value |
+|---|---|
+| `ANKIWEB_USERNAME` | Your AnkiWeb username or email |
+| `ANKIWEB_PASSWORD` | Your AnkiWeb password |
+| `BEEMINDER_USER` | Your Beeminder username |
+| `BEEMINDER_TOKEN` | Your Beeminder API token |
+| `BEEMINDER_GOAL` | The Beeminder goal slug |
+
+Optional Actions variables are `ANKI_DECK_FILTER` (blank means all decks) and
+`ANKI_TIMEZONE` (defaults to `Europe/Ljubljana`). Never put these credentials
+in `config.json`, workflow files, commits, or log output.
+
+Use **Actions → Daily Anki reviews to Beeminder → Run workflow** for the first
+run. Select `dry_run` to validate the AnkiWeb sync and metric without writing
+to Beeminder; the normal scheduled run performs the Beeminder update. GitHub
+Actions scheduling is best-effort, so the manual trigger is also the recovery
+path after an authentication or network failure.
 
 ## Metrics reference
 
