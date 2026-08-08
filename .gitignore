@@ -10,6 +10,9 @@ beeminder_sync.log.*
 
 # Credentials — never commit real config
 config.json
+.env
+.env.*
+!.env.example
 
 # Development artifacts
 visual_test.py

@@ -2,7 +2,6 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
-import datetime
 import json
 import logging
 import os
@@ -13,6 +12,15 @@ from aqt.utils import showWarning, tooltip
 from aqt.qt import QAction
 
 from . import ui
+from .metrics import (
+    anki_day_datestr,
+    day_start_ms,
+    get_backlog as metrics_get_backlog,
+    get_deck_id,
+    get_minutes_today as metrics_get_minutes_today,
+    get_new_cards_today as metrics_get_new_cards_today,
+    get_reviews_today as metrics_get_reviews_today,
+)
 
 PLUGIN_NAME = "Anki-Beeminder Sync"
 VERSION = "1.1.0"
@@ -61,95 +69,41 @@ METRIC_LABELS = {
 
 def _day_start_ms():
     """Unix timestamp in milliseconds for the start of the current Anki day."""
-    cutoff = mw.col.sched.day_cutoff
-    return (cutoff - 86400) * 1000
+    return day_start_ms(mw.col)
 
 
 def _anki_today_datestr():
     """Return the current Anki day as a YYYY-MM-DD string."""
-    if not mw.col:
-        return datetime.date.today().isoformat()
-    day_start_ts = mw.col.sched.day_cutoff - 86400
-    return datetime.datetime.fromtimestamp(day_start_ts).strftime("%Y-%m-%d")
+    return anki_day_datestr(mw.col)
 
 
 def _deck_id(deck_name):
     """Return the deck ID for *deck_name*, or None if not found / empty."""
-    if not deck_name:
-        return None
-    deck = mw.col.decks.by_name(deck_name)
-    return deck["id"] if deck else None
+    return get_deck_id(mw.col, deck_name)
 
 
 def get_reviews_today(deck_filter=None):
     if not mw.col:
         return 0
-    start_ms = _day_start_ms()
-    if deck_filter:
-        did = _deck_id(deck_filter)
-        if did is None:
-            return 0
-        return mw.col.db.scalar(
-            "SELECT count() FROM revlog r JOIN cards c ON r.cid = c.id "
-            "WHERE r.id > ? AND c.did = ?",
-            start_ms,
-            did,
-        )
-    return mw.col.db.scalar("SELECT count() FROM revlog WHERE id > ?", start_ms)
+    return metrics_get_reviews_today(mw.col, deck_filter)
 
 
 def get_new_cards_today(deck_filter=None):
     if not mw.col:
         return 0
-    start_ms = _day_start_ms()
-    if deck_filter:
-        did = _deck_id(deck_filter)
-        if did is None:
-            return 0
-        return mw.col.db.scalar(
-            "SELECT count() FROM revlog r JOIN cards c ON r.cid = c.id "
-            "WHERE r.id > ? AND r.type = 0 AND c.did = ?",
-            start_ms,
-            did,
-        )
-    return mw.col.db.scalar(
-        "SELECT count() FROM revlog WHERE id > ? AND type = 0", start_ms
-    )
+    return metrics_get_new_cards_today(mw.col, deck_filter)
 
 
 def get_backlog(deck_filter=None):
     if not mw.col:
         return 0
-    query = (
-        f'"deck:{deck_filter}" (is:due or is:learn)'
-        if deck_filter
-        else "is:due or is:learn"
-    )
-    return len(mw.col.find_cards(query))
+    return metrics_get_backlog(mw.col, deck_filter)
 
 
 def get_minutes_today(deck_filter=None):
     if not mw.col:
         return 0
-    start_ms = _day_start_ms()
-    if deck_filter:
-        did = _deck_id(deck_filter)
-        if did is None:
-            return 0
-        total_ms = (
-            mw.col.db.scalar(
-                "SELECT sum(time) FROM revlog r JOIN cards c ON r.cid = c.id "
-                "WHERE r.id > ? AND c.did = ?",
-                start_ms,
-                did,
-            )
-            or 0
-        )
-    else:
-        total_ms = (
-            mw.col.db.scalar("SELECT sum(time) FROM revlog WHERE id > ?", start_ms) or 0
-        )
-    return round(total_ms / 1000 / 60, 1)
+    return metrics_get_minutes_today(mw.col, deck_filter)
 
 
 _METRIC_FUNCS = {
