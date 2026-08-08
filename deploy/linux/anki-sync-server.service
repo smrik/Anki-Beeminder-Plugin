@@ -1,0 +1,22 @@
+[Unit]
+Description=Official Anki self-hosted sync server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=anki
+Group=anki
+WorkingDirectory=/var/lib/anki-beeminder
+EnvironmentFile=/etc/anki-beeminder/anki-sync-server.env
+ExecStart=/opt/anki-beeminder/venv/bin/python -m anki.syncserver
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/anki-beeminder
+
+[Install]
+WantedBy=multi-user.target
