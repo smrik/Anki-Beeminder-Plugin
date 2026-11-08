@@ -262,3 +262,8 @@ Bug reports and pull requests are welcome. Please open an issue before submittin
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Project workflow
+
+See [the project workflow](docs/PATRIK_WORKFLOW.md) for tasks, agent roles,
+review, and progress updates.
