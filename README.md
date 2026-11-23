@@ -168,7 +168,7 @@ Secrets are stored outside Git in:
 - `/etc/anki-beeminder/anki-beeminder.env`
 
 The server collection lives at
-`/var/lib/anki-beeminder/sync/collection.anki2`. The worker first creates a
+`/var/lib/anki-beeminder/sync/<sync-username>/collection.anki2`. The worker first creates a
 SQLite snapshot of that file, then counts `revlog` entries in the snapshot, so
 it does not open the live server database for metric queries.
 
@@ -188,7 +188,7 @@ it does not open the live server database for metric queries.
 ```bash
   cd /opt/anki-beeminder
   sudo -u anki env \
-  ANKI_COLLECTION_PATH=/var/lib/anki-beeminder/sync/collection.anki2 \
+  ANKI_COLLECTION_PATH=/var/lib/anki-beeminder/sync/your-sync-username/collection.anki2 \
   ANKI_TIMEZONE=Europe/Ljubljana \
   BEEMINDER_USER='your-user' \
   BEEMINDER_TOKEN='your-token' \
@@ -213,6 +213,11 @@ sudo systemctl status anki-sync-server.service --no-pager
 sudo systemctl list-timers anki-beeminder.timer
 sudo journalctl -u anki-sync-server -u anki-beeminder --since today
 ```
+
+At 21:05, the worker briefly stops the Anki sync server so SQLite can take a
+consistent snapshot of the live collection. It starts the server again after
+the worker finishes, including when the worker fails. Desktop and mobile Anki
+clients cannot sync during this short window.
 
 To run a real manual update after confirming the dry-run:
 
@@ -262,3 +267,7 @@ Bug reports and pull requests are welcome. Please open an issue before submittin
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Project workflow
+
+Use [Project workflow](docs/PATRIK_WORKFLOW.md) for tasks, proposals, feedback and review.

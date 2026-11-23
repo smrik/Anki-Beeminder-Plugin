@@ -24,20 +24,26 @@ class LinuxDeploymentTests(unittest.TestCase):
     def test_beeminder_service_reads_local_collection_after_sync_server(self):
         service = (DEPLOY_DIR / "anki-beeminder.service").read_text()
 
-        self.assertIn("Requires=anki-sync-server.service", service)
-        self.assertIn("After=anki-sync-server.service", service)
+        self.assertIn("User=root", service)
+        self.assertNotIn("Requires=anki-sync-server.service", service)
+        self.assertIn(
+            "ExecStartPre=/usr/bin/systemctl stop anki-sync-server.service",
+            service,
+        )
         self.assertIn(
             "EnvironmentFile=/etc/anki-beeminder/anki-beeminder.env",
             service,
         )
         self.assertIn(
-            "ExecStart=/opt/anki-beeminder/venv/bin/python -m scripts.daily_beeminder_sync",
+            "ExecStart=/usr/bin/runuser --user anki --group anki -- "
+            "/opt/anki-beeminder/venv/bin/python -m scripts.daily_beeminder_sync",
             service,
         )
         self.assertIn(
-            "--collection-path /var/lib/anki-beeminder/sync/collection.anki2",
+            "ExecStopPost=/usr/bin/systemctl start anki-sync-server.service",
             service,
         )
+        self.assertNotIn("--collection-path", service)
         self.assertNotIn("ANKIWEB", service)
 
     def test_daily_timer_is_persistent_and_runs_at_anki_day_end(self):
@@ -52,7 +58,10 @@ class LinuxDeploymentTests(unittest.TestCase):
         beeminder_env = (DEPLOY_DIR / "anki-beeminder.env.example").read_text()
 
         self.assertIn("SYNC_USER1=", sync_env)
-        self.assertIn("ANKI_COLLECTION_PATH=", beeminder_env)
+        self.assertIn(
+            "ANKI_COLLECTION_PATH=/var/lib/anki-beeminder/sync/<sync-username>/collection.anki2",
+            beeminder_env,
+        )
         self.assertIn("BEEMINDER_TOKEN=", beeminder_env)
         self.assertNotIn("ANKIWEB_PASSWORD", sync_env + beeminder_env)
         self.assertNotIn("api_token", sync_env + beeminder_env)

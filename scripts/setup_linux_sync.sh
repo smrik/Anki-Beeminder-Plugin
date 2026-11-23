@@ -197,7 +197,6 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="/opt/anki-beeminder"
 STATE_DIR="/var/lib/anki-beeminder"
 SYNC_BASE="$STATE_DIR/sync"
-COLLECTION_PATH="$SYNC_BASE/collection.anki2"
 SYSTEM_CONFIG_DIR="/etc/anki-beeminder"
 SYSTEMD_DIR="/etc/systemd/system"
 SETUP_STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/anki-beeminder"
@@ -239,6 +238,19 @@ install_systemd_env() {
   rm -f "$temporary_file"
 }
 
+install_python_prerequisites() {
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install --yes ca-certificates python3 python3-venv
+  elif command -v pacman >/dev/null 2>&1; then
+    # Arch does not support partial upgrades; refresh and upgrade before
+    # installing packages so stale sync databases do not request 404 archives.
+    sudo pacman -Syu --needed --noconfirm ca-certificates python python-pip
+  else
+    die "could not find a supported package manager (apt-get or pacman)"
+  fi
+}
+
 install_app_files() {
   sudo install -d -o anki -g anki -m 0755 "$APP_DIR" "$APP_DIR/scripts"
   sudo install -o root -g root -m 0644 "$REPO_ROOT/metrics.py" "$APP_DIR/metrics.py"
@@ -263,7 +275,9 @@ stage "Choose the local sync endpoint" 3
 say "Use 0.0.0.0 only as the Linux bind address; clients should use the laptop's LAN/VPN IP or DNS name."
 ask_default SYNC_HOST "Linux bind host [0.0.0.0]:" "0.0.0.0"
 ask_default SYNC_PORT "Linux sync port [8080]:" "8080"
-DEFAULT_CLIENT_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+# `hostname -I` is GNU-specific; inetutils on some Linux hosts exits non-zero.
+# Keep the probe optional so `set -euo pipefail` does not abort the wizard.
+DEFAULT_CLIENT_HOST="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 DEFAULT_CLIENT_HOST="${DEFAULT_CLIENT_HOST:-127.0.0.1}"
 ask_default SYNC_CLIENT_HOST "Client-visible Linux host [$DEFAULT_CLIENT_HOST]:" "$DEFAULT_CLIENT_HOST"
 write_env SYNC_HOST "$SYNC_HOST"
@@ -278,6 +292,7 @@ require_value "SYNC_USERNAME" "$SYNC_USERNAME"
 require_value "SYNC_PASSWORD" "$SYNC_PASSWORD"
 write_env SYNC_USERNAME "$SYNC_USERNAME"
 write_env SYNC_PASSWORD "$SYNC_PASSWORD"
+COLLECTION_PATH="$SYNC_BASE/$SYNC_USERNAME/collection.anki2"
 
 stage "Configure the Beeminder worker" 3
 ask BEEMINDER_USER "Beeminder username:"
@@ -297,8 +312,7 @@ write_env ANKI_TIMEZONE "$ANKI_TIMEZONE"
 stage "Install and start Linux services" 7
 say "The commands below install the official Anki Python package, create an unprivileged service account, and configure systemd."
 step "Installing prerequisites and creating /opt/anki-beeminder and /var/lib/anki-beeminder."
-sudo apt-get update
-sudo apt-get install --yes ca-certificates python3 python3-venv
+install_python_prerequisites
 if ! getent group anki >/dev/null 2>&1; then
   sudo groupadd --system anki
 fi
@@ -347,14 +361,30 @@ sudo test -f "$COLLECTION_PATH" || die "the server collection was not found at $
 stage "Run a dry-run and hand off" 3
 say "This dry-run reads a SQLite snapshot and does not call Beeminder."
 if confirm "Run the local worker dry-run now?"; then
-  sudo -u anki env \
-    "ANKI_COLLECTION_PATH=$COLLECTION_PATH" \
-    "ANKI_DECK_FILTER=$ANKI_DECK_FILTER" \
-    "ANKI_TIMEZONE=$ANKI_TIMEZONE" \
-    "BEEMINDER_USER=$BEEMINDER_USER" \
-    "BEEMINDER_TOKEN=$BEEMINDER_TOKEN" \
-    "BEEMINDER_GOAL=$BEEMINDER_GOAL" \
-    "$APP_DIR/venv/bin/python" -m scripts.daily_beeminder_sync --dry-run
+  sudo systemctl stop anki-sync-server.service
+  cleanup_sync_server() {
+    sudo systemctl start anki-sync-server.service
+  }
+  trap cleanup_sync_server EXIT
+  worker_status=0
+  (
+    cd -- "$APP_DIR"
+    sudo -u anki env \
+      "ANKI_COLLECTION_PATH=$COLLECTION_PATH" \
+      "ANKI_DECK_FILTER=$ANKI_DECK_FILTER" \
+      "ANKI_TIMEZONE=$ANKI_TIMEZONE" \
+      "BEEMINDER_USER=$BEEMINDER_USER" \
+      "BEEMINDER_TOKEN=$BEEMINDER_TOKEN" \
+      "BEEMINDER_GOAL=$BEEMINDER_GOAL" \
+      "$APP_DIR/venv/bin/python" -m scripts.daily_beeminder_sync --dry-run
+  ) || worker_status=$?
+  trap - EXIT
+  if ! cleanup_sync_server; then
+    die "the Anki sync server could not be restarted after the dry-run"
+  fi
+  if (( worker_status != 0 )); then
+    die "the worker dry-run failed with status $worker_status"
+  fi
 fi
 say "The real worker will run at 21:05 host local time."
 say "Manual commands:"

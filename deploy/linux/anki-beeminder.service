@@ -1,15 +1,15 @@
 [Unit]
 Description=Send local Anki reviews_today to Beeminder
-Requires=anki-sync-server.service
-After=anki-sync-server.service network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
-User=anki
-Group=anki
+User=root
 WorkingDirectory=/opt/anki-beeminder
 EnvironmentFile=/etc/anki-beeminder/anki-beeminder.env
-ExecStart=/opt/anki-beeminder/venv/bin/python -m scripts.daily_beeminder_sync --collection-path /var/lib/anki-beeminder/sync/collection.anki2
+ExecStartPre=/usr/bin/systemctl stop anki-sync-server.service
+ExecStart=/usr/bin/runuser --user anki --group anki -- /opt/anki-beeminder/venv/bin/python -m scripts.daily_beeminder_sync
+ExecStopPost=/usr/bin/systemctl start anki-sync-server.service
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
